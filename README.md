@@ -332,6 +332,15 @@ We welcome contributions to improve CrafyVideoJS! Here's how you can help:
 
 ---
 
+## Credits and thanks
+
+- [mp4-h264-re-encode](https://github.com/vjeux/mp4-h264-re-encode)
+- [mp4box.js](https://github.com/gpac/mp4box.js)
+- [chatgpt](https://chatgpt.com/)
+- [claude](https://claude.ai/)
+
+---
+
 ## License
 
 CrafyVideoJS is licensed under the MIT License. See the `LICENSE` file for more details.

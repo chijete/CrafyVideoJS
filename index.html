@@ -54,19 +54,6 @@
 
   <script>
     var CrafyVideoJS_instance = new CrafyVideoJS(true);
-    CrafyVideoJS_instance.onProgress = function (progressData) {
-      document.getElementById('progress_text').innerText = '';
-      if (progressData['video']) {
-        document.getElementById('progress_text').innerText += `
-          Video: `+progressData['video']['decoding']['percentage']+`% decoded, `+progressData['video']['encoding']['percentage']+`% encoded.
-        `;
-      }
-      if (progressData['audio']) {
-        document.getElementById('progress_text').innerText += `
-          Audio: `+progressData['audio']['decoding']['percentage']+`% decoded, `+progressData['audio']['encoding']['percentage']+`% encoded.
-        `;
-      }
-    };
 
     var startTime = false;
     var endTime = false;

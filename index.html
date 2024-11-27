@@ -1,0 +1,157 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>CrafyVideoJS</title>
+  <script src="MP4Box_minified.js"></script>
+  <script src="CrafyVideoJS.js"></script>
+  <style>
+    body {
+      color: #fff;
+      background-color: #000;
+    }
+    video {
+      max-width: 100%;
+    }
+  </style>
+</head>
+<body>
+
+  <h1>CrafyVideoJS</h1>
+
+  <a href="simple.html">Simple version</a>
+
+  <p><b>Input video:</b></p>
+  <div>
+    <span>Start time:</span>
+    <input type="number" placeholder="Seconds" id="start_time_input" oninput="updateInputConfigs();">
+  </div>
+  <div>
+    <span>End time:</span>
+    <input type="number" placeholder="Seconds" id="end_time_input" oninput="updateInputConfigs();">
+  </div>
+  <div>
+    <span>Max bitrate:</span>
+    <input type="number" placeholder="Bitrate" id="max_bitrate_input" oninput="updateInputConfigs();">
+  </div>
+  <div>
+    <span>Max resolution:</span>
+    <select id="max_resolution_select" oninput="updateInputConfigs();">
+      <option value="">off</option>
+      <option value="3840">4K</option>
+      <option value="1920">1080p</option>
+      <option value="1280">720p</option>
+      <option value="640">480p</option>
+    </select>
+  </div>
+  <input type="file" onchange="onInputFileChange(event.target.files[0])" accept="video/mp4"></input>
+
+  <p id="progress_text"></p>
+
+  <p><b>Output video:</b></p>
+  <video src="" id="output_video" controls></video>
+
+  <script>
+    var CrafyVideoJS_instance = new CrafyVideoJS(true);
+    CrafyVideoJS_instance.onProgress = function (progressData) {
+      document.getElementById('progress_text').innerText = '';
+      if (progressData['video']) {
+        document.getElementById('progress_text').innerText += `
+          Video: `+progressData['video']['decoding']['percentage']+`% decoded, `+progressData['video']['encoding']['percentage']+`% encoded.
+        `;
+      }
+      if (progressData['audio']) {
+        document.getElementById('progress_text').innerText += `
+          Audio: `+progressData['audio']['decoding']['percentage']+`% decoded, `+progressData['audio']['encoding']['percentage']+`% encoded.
+        `;
+      }
+    };
+
+    var startTime = false;
+    var endTime = false;
+    var maxBitrate = false;
+    var maxResolution = false;
+    var start_time_input = document.getElementById('start_time_input');
+    var end_time_input = document.getElementById('end_time_input');
+    var max_bitrate_input = document.getElementById('max_bitrate_input');
+    var max_resolution_select = document.getElementById('max_resolution_select');
+    function updateInputConfigs() {
+      if (parseInt(start_time_input.value) > 0) {
+        startTime = parseInt(start_time_input.value) * 1000000;
+      } else {
+        startTime = false;
+      }
+      if (parseInt(end_time_input.value) > 0) {
+        endTime = parseInt(end_time_input.value) * 1000000;
+      } else {
+        endTime = false;
+      }
+      if (parseInt(max_bitrate_input.value) > 0) {
+        maxBitrate = parseInt(max_bitrate_input.value);
+      } else {
+        maxBitrate = false;
+      }
+      if (parseInt(max_resolution_select.value) > 0) {
+        maxResolution = parseInt(max_resolution_select.value);
+      } else {
+        maxResolution = false;
+      }
+    }
+
+    function onInputFileChange(file) {
+      var reader = new FileReader();
+      reader.onload = async function () {
+        CrafyVideoJS_instance.onResult = function (result) {
+          console.log('Result:', result);
+          document.getElementById('progress_text').innerText = 'Completed in ' + result['reencoding_time_seconds'] + ' seconds. ';
+          if (result['reencoding_video_fps']) {
+            document.getElementById('progress_text').innerText += 'Video processing: ' + result['reencoding_video_fps'] + ' fps. ';
+          }
+          if (result['reencoding_audio_fps']) {
+            document.getElementById('progress_text').innerText += 'Audio processing: ' + result['reencoding_audio_fps'] + ' fps. ';
+          }
+          document.getElementById('output_video').src = URL.createObjectURL(new Blob([result['video_array_buffer']], { type: "video/mp4" }));
+        };
+        CrafyVideoJS_instance.onProgress = function (progressData) {
+          document.getElementById('progress_text').innerText = '';
+          if (progressData['video']) {
+            document.getElementById('progress_text').innerText += `
+              Video: `+ progressData['video']['decoding']['percentage'] + `% decoded, total: ` + progressData['video']['decoding']['count'] + `, ` + progressData['video']['encoding']['percentage'] + `% encoded.
+              Decoding ETA: `+ Math.round(progressData['video']['decoding']['eta'] / 1000) + ` seconds.
+              Encoding ETA: `+ Math.round(progressData['video']['encoding']['eta'] / 1000) + ` seconds.
+            `;
+          }
+          if (progressData['audio']) {
+            document.getElementById('progress_text').innerText += `
+              Audio: `+ progressData['audio']['decoding']['percentage'] + `% decoded, ` + progressData['audio']['encoding']['percentage'] + `% encoded.
+            `;
+          }
+          if (progressData['video']['eta']) {
+            document.getElementById('progress_text').innerText += `
+              Total ETA: `+ Math.round(progressData['video']['eta'] / 1000) + ` seconds.
+            `;
+          }
+        };
+        CrafyVideoJS_instance.onError = function (error) {
+          CrafyVideoJS_instance.onProgress = function (progressData) { };
+          document.getElementById('progress_text').innerText = 'Processing error!';
+          console.error('Handled error:', error);
+        };
+        CrafyVideoJS_instance.processVideo({
+          file: this.result,
+          start_timestamp: startTime,
+          end_timestamp: endTime,
+          max_video_bitrate: maxBitrate,
+          max_video_resolution: maxResolution
+        });
+      };
+      reader.readAsArrayBuffer(file);
+    }
+  </script>
+
+  <p>Github repository: <a href="https://github.com/chijete/CrafyVideoJS">https://github.com/chijete/CrafyVideoJS</a></p>
+  <p>Made with 💙 by <a href="https://chijete.com/">Crafy Holding</a>.</p>
+  
+</body>
+</html>

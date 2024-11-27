@@ -1,0 +1,165 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>CrafyVideoJS</title>
+  <script src="MP4Box_minified.js"></script>
+  <script src="CrafyVideoJS.js"></script>
+  <style>
+    body {
+      color: #fff;
+      background-color: #000;
+    }
+
+    video {
+      max-width: 100%;
+    }
+  </style>
+</head>
+
+<body>
+
+  <h1>CrafyVideoJS: simple compression</h1>
+
+  <a href="index.html">back</a>
+
+  <p><b>Input video:</b></p>
+  <input type="file" onchange="onInputFileChange(event.target.files[0])" accept="video/mp4"></input>
+
+  <p id="progress_text"></p>
+
+  <p><b>Output video:</b></p>
+  <video src="" id="output_video" controls></video>
+
+  <script>
+    var CrafyVideoJS_instance = new CrafyVideoJS(true);
+
+    // maxBitrate strategies:
+    // maxBitrate = 500_000 (fixed maximum)
+    // maxBitrate = {
+    //   "type": "percentage_of_original",
+    //   "percentage": 50
+    // } (percentage of original video bitrate)
+    // maxBitrate = {
+    //   "type": "max_by_resolution",
+    //   "data": {
+    //     2073600: 5_000_000,
+    //     921600: 1_000_000,
+    //     307200: 300_000
+    //   }
+    // } (maximum for closest video resolution)
+    // maxBitrate = {
+    //   "type": "percentage_of_original_by_resolution",
+    //   "data": {
+    //     2073600: 50,
+    //     921600: 40,
+    //     307200: 30
+    //   }
+    // } (percentage of original video bitrate for closest video resolution)
+    // maxBitrate = {
+    //   "type": "percentage_and_max_of_original_by_resolution",
+    //   "data": {
+    //     2073600: {
+    //       "percentage": 50,
+    //       "max": 5_000_000
+    //     },
+    //     921600: {
+    //       "percentage": 40,
+    //       "max": 1_000_000
+    //     },
+    //     307200: {
+    //       "percentage": 30,
+    //       "max": 300_000
+    //     }
+    //   }
+    // } (percentage of original video bitrate for closest video resolution, combined with max)
+    // Note: resolution = video width * video height
+    // Note: resolution is output video resolution
+    // Note: "max" is bitrate (in bits)
+
+    function onInputFileChange(file) {
+      var reader = new FileReader();
+      reader.onload = async function () {
+        CrafyVideoJS_instance.onResult = function (result) {
+          console.log('Result:', result);
+          document.getElementById('progress_text').innerText = 'Completed in ' + result['reencoding_time_seconds'] + ' seconds. ';
+          if (result['reencoding_video_fps']) {
+            document.getElementById('progress_text').innerText += 'Video processing: ' + result['reencoding_video_fps'] + ' fps. ';
+          }
+          if (result['reencoding_audio_fps']) {
+            document.getElementById('progress_text').innerText += 'Audio processing: ' + result['reencoding_audio_fps'] + ' fps. ';
+          }
+          document.getElementById('output_video').src = URL.createObjectURL(new Blob([result['video_array_buffer']], { type: "video/mp4" }));
+        };
+        CrafyVideoJS_instance.onProgress = function (progressData) {
+          document.getElementById('progress_text').innerText = '';
+          if (progressData['video']) {
+            document.getElementById('progress_text').innerText += `
+              Video: `+ progressData['video']['decoding']['percentage'] + `% decoded, total: ` + progressData['video']['decoding']['count'] + `, ` + progressData['video']['encoding']['percentage'] + `% encoded.
+              Decoding ETA: `+ Math.round(progressData['video']['decoding']['eta'] / 1000) + ` seconds.
+              Encoding ETA: `+ Math.round(progressData['video']['encoding']['eta'] / 1000) + ` seconds.
+            `;
+          }
+          if (progressData['audio']) {
+            document.getElementById('progress_text').innerText += `
+              Audio: `+ progressData['audio']['decoding']['percentage'] + `% decoded, ` + progressData['audio']['encoding']['percentage'] + `% encoded.
+            `;
+          }
+          if (progressData['video']['eta']) {
+            document.getElementById('progress_text').innerText += `
+              Total ETA: `+ Math.round(progressData['video']['eta'] / 1000) + ` seconds.
+            `;
+          }
+        };
+        CrafyVideoJS_instance.onError = function (error) {
+          CrafyVideoJS_instance.onProgress = function (progressData) {};
+          document.getElementById('progress_text').innerText = 'Processing error!';
+          console.error('Handled error:', error);
+        };
+        CrafyVideoJS_instance.processVideo({
+          file: this.result,
+          max_video_bitrate: {
+            "type": "percentage_and_max_of_original_by_resolution",
+            "data": {
+              2073600: {
+                "percentage": 85,
+                "max": 3_000_000
+              },
+              921600: {
+                "percentage": 85,
+                "max": 1_500_000
+              },
+              307200: {
+                "percentage": 85,
+                "max": 500_000
+              }
+            }
+          },
+          max_video_resolution: {
+            "type": "by_max_samplesCount",
+            "data": {
+              // Video seconds duration * Video FPS: Max resolution
+              1200: 1920,
+              30000: 1280,
+              0: 640
+            }
+          },
+          preprocess_video_info_function: async function (mp4_video_info) {
+            return {
+              start_timestamp: false
+            };
+          }
+        });
+      };
+      reader.readAsArrayBuffer(file);
+    }
+  </script>
+
+  <p>Github repository: <a href="https://github.com/chijete/CrafyVideoJS">https://github.com/chijete/CrafyVideoJS</a></p>
+  <p>Made with 💙 by <a href="https://chijete.com/">Crafy Holding</a>.</p>
+
+</body>
+
+</html>

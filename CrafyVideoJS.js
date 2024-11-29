@@ -422,9 +422,10 @@ class CrafyVideoJS {
                   }
                 }
     
+                var resizedFrame;
+
                 if (allowedFrame) {
                   if (videoResizeDimensions !== false) {
-                    var resizedFrame;
                     if (redimension_system == 'webgl') {
                       resizedFrame = await videoResizer.resize(inputFrame);
                     } else if (redimension_system == 'bitmap') {
@@ -471,7 +472,9 @@ class CrafyVideoJS {
                   videoFrameCount--;
                 }
                 try {
-                  resizedFrame.close();
+                  if (resizedFrame !== undefined) {
+                    resizedFrame.close();
+                  }
                   inputFrame.close();
                 } catch (error) { }
     

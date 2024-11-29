@@ -333,7 +333,10 @@ class CrafyVideoJS {
             eval(variableName + " = variableNewValue;");
           }
         }
-        savedThis.getSupportedAudioBitrates(audioTrack).then((supportedAudioBitrates) => {
+
+        var outputAudioCodec = audioTrack.codec;
+
+        savedThis.getSupportedAudioBitrates(audioTrack, outputAudioCodec).then((supportedAudioBitrates) => {
 
           if (savedThis.logs) console.log('queue_max_size', queue_max_size);
   
@@ -676,18 +679,36 @@ class CrafyVideoJS {
             });
     
             var audioCodec = audioTrack.codec;
-            var outputAudioCodec = audioCodec;
+
+            let audio_description;
+            const audio_trak = mp4boxInputFile.getTrackById(audioTrack.id);
+            for (const entry of audio_trak.mdia.minf.stbl.stsd.entries) {
+              if (entry.dOps) {
+                const stream = new DataStream(undefined, 0, DataStream.BIG_ENDIAN);
+                if (entry.dOps) {
+                  entry.dOps.write(stream);
+                }
+                audio_description = new Uint8Array(stream.buffer); // Remove the box header.
+                break;
+              }
+            }
     
-            audioDecoder.configure({
+            var audioDecoderConfigParams = {
               codec: audioCodec,
               numberOfChannels: audioTrack.audio.channel_count,
               sampleRate: audioTrack.audio.sample_rate,
-            });
+            };
+
+            if (audio_description !== undefined) {
+              audioDecoderConfigParams.description = audio_description;
+            }
+
+            audioDecoder.configure(audioDecoderConfigParams);
     
             audioEncoder = new AudioEncoder({
               output(chunk, metadata) {
                 let uint8 = new Uint8Array(chunk.byteLength);
-                chunk.copyTo(uint8);
+                chunk.copyTo(uint8);                
     
                 if (audioTrak === null) {
                   audioTrak = savedThis.addTrak(
@@ -695,7 +716,8 @@ class CrafyVideoJS {
                     {
                       type: 'audio',
                       codec: outputAudioCodec,
-                      audioAvgBitrate: newAudioBitrate
+                      audioAvgBitrate: newAudioBitrate,
+                      decoderConfig_description: audio_description
                     },
                     output_video_codec
                   );
@@ -1096,7 +1118,7 @@ class CrafyVideoJS {
 
     const isVideo = config.type === "video";
 
-    if (!isVideo) {
+    if (!isVideo) {      
       mp4File.addTrack({
         id: 2,
         type: 'audio',
@@ -1126,7 +1148,7 @@ class CrafyVideoJS {
         .set("flags", 0);
       const codecParts = config.codec.split(".");
       const codecType = codecParts[0];
-      if (codecType === "mp4a") {
+      if (codecType.toLowerCase() === "mp4a") {
         var mp4a = new BoxParser.mp4aSampleEntry()
           .set("data_reference_index", 1)
           .set("channel_count", savedThis.AUDIO_CHANNELCOUNT)
@@ -1140,20 +1162,29 @@ class CrafyVideoJS {
         stsd_i.addEntry(mp4a);
         stsd_i.entries[0].type = config.codec;
       } else if (codecType === "ac-3" || codecType === "ec-3") {
-        var ac3 = new BoxParser.ac3SampleEntry()
-          .set("data_reference_index", 1);
-        stsd_i.addEntry(ac3);
-      } else if (codecType === "opus") {
+        // TODO: not supported!
+        // var ac3 = new BoxParser.ac3SampleEntry()
+        //   .set("data_reference_index", 1);
+        // stsd_i.addEntry(ac3);
+      } else if (codecType.toLowerCase() === "opus") {
         var opus = new BoxParser.OpusSampleEntry()
           .set("data_reference_index", 1)
           .set("channel_count", savedThis.AUDIO_CHANNELCOUNT)
           .set("samplesize", savedThis.AUDIO_SAMPLESIZE)
-          .set("samplerate", savedThis.AUDIO_SAMPLERATE);
+          .set("samplerate", savedThis.AUDIO_SAMPLERATE);        
+
+        var dOpsBox = new BoxParser.dOpsBox();
+        var stream = new MP4BoxStream(config.decoderConfig_description.buffer);
+        dOpsBox.parse(stream);
+        opus.addBox(dOpsBox);
+
         stsd_i.addEntry(opus);
-      } else if (codecType === "alac") {
-        var alac = new BoxParser.alacSampleEntry()
-          .set("data_reference_index", 1);
-        stsd_i.addEntry(alac);
+        stsd_i.entries[0].type = config.codec;
+      } else if (codecType.toLowerCase() === "alac") {
+        // TODO: not supported!
+        // var alac = new BoxParser.alacSampleEntry()
+        //   .set("data_reference_index", 1);
+        // stsd_i.addEntry(alac);
       }
       const stts = stbl.add("stts")
         .set("sample_counts", [])
@@ -1341,7 +1372,10 @@ class CrafyVideoJS {
     var savedThis = this;
 
     const isVideo = trak.mdia.hdlr.handler === 'vide';
-    const isHEVC = trak.mdia.minf.stbl.stsd.entries[0].type === 'hvc1';
+    var isHEVC = false;
+    try {
+      isHEVC = trak.mdia.minf.stbl.stsd.entries[0].type === 'hvc1';
+    } catch (error) {}
 
     if (savedThis.isFirstVideoSample && isVideo) {
       savedThis.isFirstVideoSample = false;

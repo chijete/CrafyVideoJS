@@ -170,8 +170,12 @@ This is the main function to load a video as an `ArrayBuffer`, decode it, apply 
 Allowed formats and codecs:
 
 - MP4
-  - H.264 (AVC)
-  - H.265 (HVC)
+  - Video codec:
+    - H.264 (AVC)
+    - H.265 (HVC)
+  - Audio codec:
+    - mp4a
+    - Opus
 
 ##### `max_video_bitrate`
 

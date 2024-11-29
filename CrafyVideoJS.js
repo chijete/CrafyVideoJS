@@ -222,7 +222,8 @@ class CrafyVideoJS {
   * @param {string} redimension_resizeQuality - (optional) "pixelated" | "low" | "medium" | "high"
   * @param {int} max_input_video_size - (optional) Max input video size in bytes.
   * @param {int} max_input_video_samplesCount - (optional) Max input video samples count.
-  * @param {function} preprocess_video_info_function - (optional) Async function that receives the mp4box information from the input video and returns an object whose keys allow changing the rest of these parameters. 
+  * @param {function} preprocess_video_info_function - (optional) Async function that receives the mp4box information from the input video and returns an object whose keys allow changing the rest of these parameters.
+  * @param {string} output_video_codec - (optional) "avc1" | (experimental, not working: "hvc1")
   */
   async processVideo({
     file,
@@ -237,7 +238,8 @@ class CrafyVideoJS {
     redimension_resizeQuality = 'low',
     max_input_video_size = false,
     max_input_video_samplesCount = false,
-    preprocess_video_info_function = false
+    preprocess_video_info_function = false,
+    output_video_codec = "avc1"
   } = {}) {
     this.resetThisVariables();
     var savedThis = this;
@@ -384,11 +386,11 @@ class CrafyVideoJS {
               async output(inputFrame) {
     
                 // const bitmap = await createImageBitmap(inputFrame);
-    
+
                 // const outputFrame = new VideoFrame(bitmap, {
                 //   timestamp: inputFrame.timestamp,
                 // });
-    
+
                 // const keyFrameEveryHowManySeconds = 2;
                 // let keyFrame = false;
                 // if (inputFrame.timestamp >= nextVideoKeyFrameTimestamp) {
@@ -398,6 +400,17 @@ class CrafyVideoJS {
                 // videoEncoder.encode(outputFrame, { keyFrame });
                 // inputFrame.close();
                 // outputFrame.close();
+
+                // Debug:
+                // videoDecoder_isFirst
+                // if (true) {
+                //   const canvas = document.createElement("canvas");
+                //   const ctx = canvas.getContext("2d");
+                //   canvas.width = inputFrame.codedWidth;
+                //   canvas.height = inputFrame.codedHeight;
+                //   ctx.drawImage(inputFrame, 0, 0);
+                //   document.body.appendChild(canvas);
+                // }
     
                 var allowedFrame = true;
                 if (start_timestamp !== false) {
@@ -433,19 +446,29 @@ class CrafyVideoJS {
                         if (savedThis.logs) console.error(error);
                       }
                     }
-                    resizedFrame.close();
                   } else {
+                    const bitmap = await createImageBitmap(inputFrame, {
+                      resizeWidth: inputFrame.codedWidth,
+                      resizeHeight: inputFrame.codedHeight,
+                      resizeQuality: redimension_resizeQuality
+                    });
+                    resizedFrame = new VideoFrame(bitmap, {
+                      timestamp: inputFrame.timestamp,
+                      duration: inputFrame.duration
+                    });
+                    bitmap.close();
                     if (videoDecoder_isFirst) {
                       videoDecoder_isFirst = false;
-                      videoEncoder.encode(inputFrame, { keyFrame: true });
+                      videoEncoder.encode(resizedFrame, { keyFrame: true, timestamp: inputFrame.timestamp });
                     } else {
-                      videoEncoder.encode(inputFrame);
+                      videoEncoder.encode(resizedFrame, { timestamp: inputFrame.timestamp });
                     }
                   }
                 } else {
                   videoFrameCount--;
                 }
                 try {
+                  resizedFrame.close();
                   inputFrame.close();
                 } catch (error) { }
     
@@ -518,7 +541,14 @@ class CrafyVideoJS {
   
             if (savedThis.logs) console.log('newVideoBitrate', newVideoBitrate);
   
-            var outputVideoCodec = savedThis.getAVCCodec(outputVideoDimensions.width, outputVideoDimensions.height, newVideoBitrate);
+            var outputVideoCodec;
+            
+            if (output_video_codec == 'avc1') {
+              outputVideoCodec = savedThis.getAVCCodec(outputVideoDimensions.width, outputVideoDimensions.height, newVideoBitrate);
+            } else if (output_video_codec == 'hvc1') {
+              outputVideoCodec = savedThis.getHVC1Codec(outputVideoDimensions.width, outputVideoDimensions.height, newVideoBitrate);
+            }
+
             if (savedThis.logs) console.log('outputVideoCodec', outputVideoCodec);
   
             videoEncoder = new VideoEncoder({
@@ -527,15 +557,32 @@ class CrafyVideoJS {
                 chunk.copyTo(uint8);
     
                 if (videoTrak === null) {
+                  let addTrakData = {
+                    type: 'video',
+                    width: outputVideoDimensions.width,
+                    height: outputVideoDimensions.height,
+                    codec: outputVideoCodec
+                  };
+                  if (output_video_codec == 'avc1') {
+                    addTrakData.avcDecoderConfigRecord = metadata.decoderConfig.description;
+                  } else if (output_video_codec == 'hvc1') {
+                    addTrakData.hvcDecoderConfigRecord = metadata.decoderConfig.description;
+                    addTrakData.hevcParams = {
+                      profileSpace: 0,
+                      tierFlag: 0,
+                      profileIdc: 1,
+                      profileCompatibility: 0x60000000,
+                      levelIdc: 93, // Level 3.1
+                      constraintIndicatorFlags: new Uint8Array([0x90, 0x00, 0x00, 0x00, 0x00, 0x00]),
+                      chromaFormat: 1, // 4:2:0
+                      bitDepth: 8
+                    };
+                  }
+
                   videoTrak = savedThis.addTrak(
                     mp4boxOutputFile,
-                    {
-                      type: 'video',
-                      width: outputVideoDimensions.width,
-                      height: outputVideoDimensions.height,
-                      avcDecoderConfigRecord: metadata.decoderConfig.description,
-                      codec: outputVideoCodec
-                    }
+                    addTrakData,
+                    output_video_codec
                   );
                 }
     
@@ -547,6 +594,8 @@ class CrafyVideoJS {
                   chunk.type === 'key',
                   sampleDuration,
                   /* addDuration */ true,
+                  output_video_codec,
+                  metadata
                 );
     
                 encodedVideoFrameIndex++;
@@ -561,6 +610,17 @@ class CrafyVideoJS {
                 savedThis.in_onError(error);
               }
             });
+
+            if (savedThis.logs) console.log('videoEncoder.configure', JSON.stringify({
+              codec: outputVideoCodec,
+              width: outputVideoDimensions.width,
+              height: outputVideoDimensions.height,
+              hardwareAcceleration: 'prefer-hardware',
+              bitrate: newVideoBitrate,
+              bitrateMode: 'variable',
+              alpha: 'discard',
+              latencyMode: encoder_latencyMode,
+            }));
     
             videoEncoder.configure({
               codec: outputVideoCodec,
@@ -570,7 +630,7 @@ class CrafyVideoJS {
               bitrate: newVideoBitrate,
               bitrateMode: 'variable',
               alpha: 'discard',
-              latencyMode: encoder_latencyMode,
+              latencyMode: encoder_latencyMode
             });
     
             mp4boxInputFile.setExtractionOptions(videoTrack.id, null, { nbSamples: Infinity });
@@ -636,7 +696,8 @@ class CrafyVideoJS {
                       type: 'audio',
                       codec: outputAudioCodec,
                       audioAvgBitrate: newAudioBitrate
-                    }
+                    },
+                    output_video_codec
                   );
                 }
     
@@ -1030,38 +1091,8 @@ class CrafyVideoJS {
     return mp4File;
   }
 
-  addTrak(mp4File, config) {
+  addTrak(mp4File, config, output_video_codec) {
     var savedThis = this;
-
-    function calculateDecoderSpecificInfo(profile, sampleRate, channelCount) {
-      const audioObjectType = parseInt(profile) || 2;
-      const channelConfig = Math.min(7, Math.max(1, parseInt(channelCount) || 2));
-
-      const sampleRates = {
-        96000: 0x0, 88200: 0x1, 64000: 0x2, 48000: 0x3,
-        44100: 0x4, 32000: 0x5, 24000: 0x6, 22050: 0x7,
-        16000: 0x8, 12000: 0x9, 11025: 0xA, 8000: 0xB,
-        7350: 0xC
-      };
-
-      const samplingFrequencyIndex = sampleRates[sampleRate] ?? 0x4;
-
-      // Crear buffer y vista
-      const buffer = new Uint8Array(2);
-      buffer[0] = (audioObjectType << 3) | ((samplingFrequencyIndex & 0x0E) >> 1);
-      buffer[1] = ((samplingFrequencyIndex & 0x01) << 7) | (channelConfig << 3);
-
-      return buffer;
-    }
-
-    function calculateBitrates(avgBitrate) {
-      const baseBitrate = Math.ceil(parseFloat(avgBitrate) || 128000);
-      return {
-        bufferSizeDB: Math.ceil((baseBitrate * 1.3) / 8),
-        maxBitrate: Math.ceil(baseBitrate * 1.3),
-        avgBitrate: baseBitrate
-      };
-    }
 
     const isVideo = config.type === "video";
 
@@ -1141,6 +1172,8 @@ class CrafyVideoJS {
     const moov = mp4File.moov;
     const trak = moov.add("trak");
 
+    savedThis.video_track = trak;
+
     const id = moov.mvhd.next_track_id;
     moov.mvhd.next_track_id++;
 
@@ -1200,152 +1233,85 @@ class CrafyVideoJS {
     var stbl = minf.add("stbl");
 
     if (isVideo) {
-      const sample_description_entry = new BoxParser.avc1SampleEntry();
-      sample_description_entry.data_reference_index = 1;
-      sample_description_entry
-        .set("width", config.width || 0)
-        .set("height", config.height || 0)
-        .set("horizresolution", 0x48 << 16)
-        .set("vertresolution", 0x48 << 16)
-        .set("frame_count", 1)
-        .set("compressorname", "")
-        .set("depth", 0x18);
+      var sample_description_entry;
 
-      var avcC = new BoxParser.avcCBox();
-      var stream = new MP4BoxStream(config.avcDecoderConfigRecord);
-      avcC.parse(stream);
-      sample_description_entry.addBox(avcC);
+      if (output_video_codec == 'avc1') {
+        sample_description_entry = new BoxParser.avc1SampleEntry();
+        sample_description_entry.data_reference_index = 1;
+        sample_description_entry
+          .set("width", config.width || 0)
+          .set("height", config.height || 0)
+          .set("horizresolution", 0x48 << 16)
+          .set("vertresolution", 0x48 << 16)
+          .set("frame_count", 1)
+          .set("compressorname", "")
+          .set("depth", 0x18);
+  
+        var avcC = new BoxParser.avcCBox();
+        var stream = new MP4BoxStream(config.avcDecoderConfigRecord);
+        avcC.parse(stream);
+        sample_description_entry.addBox(avcC);
+      } else if (output_video_codec == 'hvc1') {
+        sample_description_entry = new BoxParser.hvc1SampleEntry();
+        sample_description_entry.data_reference_index = 1;
+        sample_description_entry
+          .set("width", config.width || 0)
+          .set("height", config.height || 0)
+          .set("horizresolution", 0x48 << 16)
+          .set("vertresolution", 0x48 << 16)
+          .set("frame_count", 1)
+          .set("compressorname", "")
+          .set("depth", 0x18);
+
+        // Add HDR metadata if available
+        if (config.hdrMetadata) {
+          // Add HDR color information box (colr)
+          const colr = new BoxParser.colrBox();
+          colr.colour_type = 'nclx';
+          colr.colour_primaries = config.hdrMetadata.colorPrimaries || 9; // BT.2020
+          colr.transfer_characteristics = config.hdrMetadata.transferCharacteristics || 16; // PQ
+          colr.matrix_coefficients = config.hdrMetadata.matrixCoefficients || 9; // BT.2020
+          colr.full_range_flag = config.hdrMetadata.fullRange || true;
+          sample_description_entry.addBox(colr);
+
+          // Add HDR metadata box (mdcv) if mastering display metadata is available
+          if (config.hdrMetadata.masteringDisplayData) {
+            const mdcv = new BoxParser.mdcvBox();
+            mdcv.display_primaries = config.hdrMetadata.masteringDisplayData.primaries;
+            mdcv.white_point = config.hdrMetadata.masteringDisplayData.whitePoint;
+            mdcv.max_display_mastering_luminance = config.hdrMetadata.masteringDisplayData.maxLuminance;
+            mdcv.min_display_mastering_luminance = config.hdrMetadata.masteringDisplayData.minLuminance;
+            sample_description_entry.addBox(mdcv);
+          }
+
+          // Add content light level box (clli) if available
+          if (config.hdrMetadata.contentLightLevel) {
+            const clli = new BoxParser.clliBox();
+            clli.max_content_light_level = config.hdrMetadata.contentLightLevel.maxCLL;
+            clli.max_pic_average_light_level = config.hdrMetadata.contentLightLevel.maxFALL;
+            sample_description_entry.addBox(clli);
+          }
+        }
+
+        var hvcC = new BoxParser.hvcCBox();
+        if (savedThis.logs) console.log('config.hvcDecoderConfigRecord', config.hvcDecoderConfigRecord);
+        var stream = new MP4BoxStream(config.hvcDecoderConfigRecord);
+        hvcC.parse(stream);
+
+        // Add specific HEVC parameters if available
+        if (config.hevcParams) {
+          hvcC.general_profile_space = config.hevcParams.profileSpace || 0;
+          hvcC.general_tier_flag = config.hevcParams.tierFlag || 0;
+          hvcC.general_profile_idc = config.hevcParams.profileIdc || 1;
+          hvcC.general_profile_compatibility = config.hevcParams.profileCompatibility || 0;
+          hvcC.general_level_idc = config.hevcParams.levelIdc || 120;
+        }
+
+        sample_description_entry.addBox(hvcC);
+      }
 
       const stsd = stbl.add("stsd")
         .addEntry(sample_description_entry);
-    } else {
-      const codecParts = config.codec.split(".");
-      const codecType = codecParts[0];
-
-      if (codecType === "mp4a") {
-
-        var mp4a = new BoxParser.mp4aSampleEntry()
-          .set("data_reference_index", 1)
-          .set("channel_count", savedThis.AUDIO_CHANNELCOUNT)
-          .set("samplesize", savedThis.AUDIO_SAMPLESIZE)
-          .set("samplerate", savedThis.AUDIO_SAMPLERATE << 16);
-
-        const audioSpecificConfig = calculateDecoderSpecificInfo(
-          codecParts[2],
-          savedThis.AUDIO_SAMPLERATE,
-          savedThis.AUDIO_CHANNELCOUNT
-        );
-
-        const bitrates = calculateBitrates(config.audioAvgBitrate);
-
-        console.log(
-          codecParts[2],
-          savedThis.AUDIO_SAMPLERATE,
-          savedThis.AUDIO_CHANNELCOUNT,
-          config.audioAvgBitrate,
-          audioSpecificConfig,
-          bitrates
-        );
-        
-        var esds = new BoxParser.esdsBox();
-        esds.version = 0;
-        esds.flags = 0;
-        esds.ESDescriptor = {
-          tag: 0x03,
-          length: 0,
-          ESid: 0,
-          flags: 0,
-          dependsOn_ES_ID: 0,
-          URL_length: 0,
-          URLstring: "",
-          OCR_ES_Id: 0,
-          priority: 0
-        };
-        esds.DecoderConfigDescriptor = {
-          tag: 0x04,
-          length: 0, // Se calculará automáticamente
-          objectTypeIndication: 0x40, // AAC
-          streamType: 0x05, // AudioStream
-          bufferSizeDB: bitrates.bufferSizeDB,
-          maxBitrate: bitrates.maxBitrate,
-          avgBitrate: bitrates.avgBitrate,
-          DecoderSpecificInfo: {
-            tag: 0x05,
-            length: audioSpecificConfig.length,
-            data: audioSpecificConfig
-          }
-        };
-        esds.SLConfigDescriptor = {
-          tag: 0x06,
-          length: 1,
-          predefined: 2
-        };
-
-        // esds.set("ESDescr", {
-        //   ESID: 0,
-        //   streamDependenceFlag: 0,
-        //   URLFlag: 0,
-        //   OCRstreamFlag: 0,
-        //   streamPriority: 0,
-        //   URLlength: 0,
-        //   decoderConfigDescr: {
-        //     objectTypeIndication: 0x40,
-        //     streamType: 0x05,
-        //     upStream: 0,
-        //     bufferSizeDB: bitrates.bufferSizeDB,
-        //     maxBitrate: bitrates.maxBitrate,
-        //     avgBitrate: bitrates.avgBitrate,
-        //     decoderSpecificInfo: audioSpecificConfig
-        //   },
-        //   SLConfigDescr: {
-        //     predefined: 0x02,
-        //     useAccessUnitStartFlag: 0,
-        //     useAccessUnitEndFlag: 0,
-        //     useRandomAccessPointFlag: 0,
-        //     useRandomAccessUnitsOnlyFlag: 0,
-        //     usePaddingFlag: 0,
-        //     useTimeStampsFlag: 0,
-        //     useIdleFlag: 0,
-        //     durationFlag: 0,
-        //     timeStampResolution: 0,
-        //     OCRResolution: 0,
-        //     timeStampLength: 0,
-        //     OCRLength: 0,
-        //     AU_Length: 0,
-        //     instantBitrateLength: 0,
-        //     degradationPriorityLength: 0,
-        //     AU_seqNumLength: 0,
-        //     packetSeqNumLength: 0,
-        //     timeScale: 0
-        //   }
-        // });
-
-        mp4a.addBox(esds);
-
-        const stsd_i = stbl.add("stsd")
-          .set("version", 0)
-          .set("flags", 0);
-
-        stsd_i.addEntry(mp4a);
-      } else if (codecType === "ac-3" || codecType === "ec-3") {
-        var ac3 = new BoxParser.ac3SampleEntry()
-          .set("data_reference_index", 1);
-
-        stbl.add("stsd").addEntry(ac3);
-      } else if (codecType === "opus") {
-        var opus = new BoxParser.opusSampleEntry()
-          .set("data_reference_index", 1)
-          .set("channel_count", savedThis.AUDIO_CHANNELCOUNT)
-          .set("samplesize", savedThis.AUDIO_SAMPLESIZE)
-          .set("samplerate", savedThis.AUDIO_SAMPLERATE << savedThis.AUDIO_SAMPLESIZE);
-
-        stbl.add("stsd").addEntry(opus);
-      } else if (codecType === "alac") {
-        var alac = new BoxParser.alacSampleEntry()
-          .set("data_reference_index", 1);
-
-        stbl.add("stsd").addEntry(alac);
-      }
     }
 
     const stts = stbl.add("stts")
@@ -1371,15 +1337,20 @@ class CrafyVideoJS {
     return trak;
   }
 
-  addSample(mp4File, trak, data, isSync, duration, addDuration) {
+  addSample(mp4File, trak, data, isSync, duration, addDuration, output_video_codec = null, metadata = null) {
     var savedThis = this;
 
     const isVideo = trak.mdia.hdlr.handler === 'vide';
+    const isHEVC = trak.mdia.minf.stbl.stsd.entries[0].type === 'hvc1';
 
     if (savedThis.isFirstVideoSample && isVideo) {
       savedThis.isFirstVideoSample = false;
       const headerSize = 4 + data[0] << 24 + data[1] << 16 + data[2] << 8 + data[3];
       data = data.slice(headerSize);
+    }
+
+    if (isVideo && isHEVC) {
+      // TODO: custom managment for hvc1
     }
 
     mp4File.mdat.parts.push(data);
@@ -1507,9 +1478,9 @@ class CrafyVideoJS {
       baseline: '42',   // 66 en decimal
       main: '4D',      // 77 en decimal
       high: '64',      // 100 en decimal
-      high10: '6E',    // 110 en decimal
-      high422: '7A',   // 122 en decimal
-      high444: 'F4'    // 244 en decimal
+      high10: '64',    // '6E' 110 en decimal (Chrome not support)
+      high422: '64',   // '7A' 122 en decimal (Chrome not support)
+      high444: '64'    // 'F4' 244 en decimal (Chrome not support)
     };
 
     // Mapeo de niveles a sus identificadores hexadecimales
@@ -1581,5 +1552,63 @@ class CrafyVideoJS {
 
   async helper_preprocess_video_info_function(a) {
     return {};
+  }
+
+  getHVC1Codec(width, height, bitrate) {
+    // Convertir bitrate a Mbps si está en bps
+    const bitrateMbps = bitrate / 1000000;
+    const resolution = width * height;
+
+    // Definir los niveles HEVC y sus límites
+    const levels = {
+        // nivel: [maxLumaSamples, maxBitrate(Mbps)]
+        "L30": [552960, 3],
+        "L60": [552960, 6],
+        "L63": [983040, 10],
+        "L90": [2228224, 20],
+        "L93": [2228224, 30],
+        "L120": [8912896, 30],
+        "L123": [8912896, 40],
+        "L150": [35651584, 60],
+        "L153": [35651584, 80],
+        "L156": [35651584, 120]
+    };
+
+    // Determinar el nivel basado en resolución y bitrate
+    let level;
+    if (resolution <= 518400) { // hasta 720p
+        if (bitrateMbps <= 3) level = "L30";
+        else level = "L60";
+    } 
+    else if (resolution <= 2073600) { // hasta 1080p
+        if (bitrateMbps <= 10) level = "L63";
+        else if (bitrateMbps <= 20) level = "L90";
+        else level = "L93";
+    }
+    else if (resolution <= 8847360) { // hasta 4K
+        if (bitrateMbps <= 30) level = "L120";
+        else level = "L123";
+    }
+    else { // 8K
+        if (bitrateMbps <= 60) level = "L150";
+        else if (bitrateMbps <= 80) level = "L153";
+        else level = "L156";
+    }
+
+    // Determinar el tier (Main o High)
+    // Main = 0, High = 1
+    const tier = bitrateMbps > 20 ? 1 : 0;
+
+    // Determinar el profile space y profile idc
+    // 1 = profile space por defecto
+    // 6 = Main 10 profile (el más común para contenido HDR)
+    const profileSpace = 1;
+    const profileIdc = 6;
+
+    // B0 = sin restricciones específicas
+    const constraints = "B0";
+
+    // Construir el string del codec
+    return `hvc1.${profileSpace}.${profileIdc}.${level}.${constraints}`;
   }
 }

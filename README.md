@@ -47,7 +47,7 @@ Check out the [online demo](https://chijete.github.io/CrafyVideoJS/) to see Craf
 ```javascript
 var CrafyVideoJS_instance = new CrafyVideoJS();
 
-// Input video must be MP4 H.264
+// Input video must be MP4 H.264 (avc) or MP4 H.265 (hvc)
 function onInputFileChange(file) {
 	var reader = new FileReader();
 	reader.onload = function () {
@@ -164,6 +164,14 @@ This is the main function to load a video as an `ArrayBuffer`, decode it, apply 
 | `max_input_video_size`            | `int`         | `false`         | (Optional) Maximum input video file size in bytes. If the input video exceeds this size, an error is returned.                                                                |
 | `max_input_video_samplesCount`    | `int`         | `false`         | (Optional) Maximum number of video samples in the input. If the input video exceeds this number of samples, an error is returned. `Number of samples = Duration in seconds * FPS`                                                           |
 | `preprocess_video_info_function`  | `function`    | `false`         | (Optional) Async function to preprocess the input video metadata and dynamically modify the method parameters.           |
+
+##### `file`
+
+Allowed formats and codecs:
+
+- MP4
+  - H.264 (AVC)
+  - H.265 (HVC)
 
 ##### `max_video_bitrate`
 
@@ -315,7 +323,7 @@ CrafyVideoJS_instance.processVideo({
 |---------------------------|-----------------------------------------------|---------------------------------------------|
 | **Performance**           | Very fast (hardware-accelerated via GPU).     | Slow (WebAssembly is CPU-only).             |
 | **Browser Compatibility** | Modern browsers supporting `VideoEncoder` and `VideoDecoder` (no Firefox support yet). | Works in most browsers, including Firefox. |
-| **Formats/Codecs**        | MP4 (H.264/AVC) only.                         | Wide range of formats and codecs.           |
+| **Formats/Codecs**        | Video input: MP4 (H.264/AVC), MP4 (H.265/HVC). Video output: MP4 (H.264/AVC) only.                         | Wide range of formats and codecs.           |
 | **Use Case**              | Ideal for MP4 H.264-focused applications requiring efficiency. | Flexible for various video processing tasks.|
 
 **Note:** CrafyVideoJS plans to support additional codecs and formats in future releases.

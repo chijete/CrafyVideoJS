@@ -215,7 +215,7 @@ class CrafyVideoJS {
   * @param {int} end_timestamp - (optional) Trim the video up to this timestamp in microseconds.
   * @param {int} max_video_bitrate - (optional) Max output video bitrate.
   * @param {int} max_video_resolution - (optional) Max output video width or height.
-  * @param {int} queue_max_size - (optional) Max number of items in queue at the same time.
+  * @param {int} queue_max_size - (optional) Max number of video chunks in queue at the same time.
   * @param {string} redimension_system - (optional) "webgl" | "bitmap"
   * @param {string} encoder_latencyMode - (optional) "quality" | "realtime"
   * @param {int} video_info_read_max_time - (optional) Maximum time in milliseconds to read the input video information.
@@ -224,6 +224,7 @@ class CrafyVideoJS {
   * @param {int} max_input_video_samplesCount - (optional) Max input video samples count.
   * @param {function} preprocess_video_info_function - (optional) Async function that receives the mp4box information from the input video and returns an object whose keys allow changing the rest of these parameters.
   * @param {string} output_video_codec - (optional) "avc1" | (experimental, not working: "hvc1")
+  * @param {int} audio_queue_max_size - (optional) Max number of audio chunks in queue at the same time.
   */
   async processVideo({
     file,
@@ -239,7 +240,8 @@ class CrafyVideoJS {
     max_input_video_size = false,
     max_input_video_samplesCount = false,
     preprocess_video_info_function = false,
-    output_video_codec = "avc1"
+    output_video_codec = "avc1",
+    audio_queue_max_size = 20
   } = {}) {
     this.resetThisVariables();
     var savedThis = this;
@@ -288,6 +290,8 @@ class CrafyVideoJS {
     let videoTrak = null;
     let audioTrak = null;
 
+    let outputAudioCodec;
+
     let inputVideoBitrate;
     let inputAudioBitrate;
     let inputVideoSamplesNumber;
@@ -295,10 +299,20 @@ class CrafyVideoJS {
     let videoResizer;
 
     let encodedFinishedPromise;
+    let encodedFinishedPromise_resolved = false;
     let encodedFinishedPromise_resolver;
     encodedFinishedPromise = new Promise((resolve) => {
       encodedFinishedPromise_resolver = resolve;
     });
+
+    let encodedAudioFinishedPromise;
+    let encodedAudioFinishedPromise_resolved = false;
+    let encodedAudioFinishedPromise_resolver;
+    encodedAudioFinishedPromise = new Promise((resolve) => {
+      encodedAudioFinishedPromise_resolver = resolve;
+    });
+
+    let audioSendedToEncodeCount = 0;
 
     let mp4boxInputFileReadyPromise_resolver;
     let mp4boxInputFileReadyPromise = new Promise((resolve) => {
@@ -315,7 +329,7 @@ class CrafyVideoJS {
       videoTrack = info.videoTracks[0];
       audioTrack = info.audioTracks[0];
 
-      if (audioTrack.codec == "mp4a") {
+      if (audioTrack && audioTrack.codec == "mp4a") {
         audioTrack.codec = "mp4a.40.2";
       }
 
@@ -334,11 +348,13 @@ class CrafyVideoJS {
           }
         }
 
-        var outputAudioCodec = audioTrack.codec;
+        if (audioTrack) {
+          outputAudioCodec = audioTrack.codec;
+        }
 
         savedThis.getSupportedAudioBitrates(audioTrack, outputAudioCodec).then((supportedAudioBitrates) => {
 
-          if (savedThis.logs) console.log('queue_max_size', queue_max_size);
+          if (savedThis.logs) console.log('queue_max_size', queue_max_size, 'audio_queue_max_size', audio_queue_max_size);
   
           if (videoTrack) {
             savedThis.VIDEO_TIMESCALE = videoTrack.timescale;
@@ -606,10 +622,6 @@ class CrafyVideoJS {
     
                 encodedVideoFrameIndex++;
                 displayProgress();
-    
-                if (encodedVideoFrameIndex >= videoFrameCount) {
-                  encodedFinishedPromise_resolver();
-                }
               },
               error(error) {
                 if (savedThis.logs) console.error(error);
@@ -670,6 +682,9 @@ class CrafyVideoJS {
                   } else {
                     audioEncoder.encode(audioData);
                   }
+                  audioSendedToEncodeCount++;
+                } else {
+                  audioFrameCount--;
                 }
                 audioData.close();
     
@@ -898,18 +913,20 @@ class CrafyVideoJS {
     }
 
     var groupsOfVideoChunks;
+    var groupsOfAudioChunks;
 
     mp4boxInputFile.onSamples = function (track_id, ref, samples) {
       if (savedThis.itsOnError) {
         return false;
       }
-      var filteredFrames = samples;
+      let filteredFrames = samples;
       if (start_timestamp !== false) {
         const nearestKeyframeInfo = findNearestKeyframe(samples, start_timestamp, samples[0].timescale);
         filteredFrames = filterFramesByRange(samples, start_timestamp, end_timestamp, samples[0].timescale, nearestKeyframeInfo.keyframe.cts);
       }
       // console.log('filteredFrames', filteredFrames);
-      var videoChunks = [];
+      let videoChunks = [];
+      let audioChunks = [];
       for (const sample of filteredFrames) {
         const chunk = {
           type: sample.is_sync ? "key" : "delta",
@@ -923,16 +940,22 @@ class CrafyVideoJS {
           videoChunks.push(chunk);
 
           // videoDecoder.decode(new EncodedVideoChunk(chunk));
-        } else {
+        } else if (audioTrack && track_id === audioTrack.id) {
           audioFrameCount++;
           sampleAudioDurations.push(sample.duration * 1_000_000 / sample.timescale);
-          audioDecoder.decode(new EncodedAudioChunk(chunk));
+          audioChunks.push(chunk);
+
+          // audioDecoder.decode(new EncodedAudioChunk(chunk));
         }
       }
       filteredFrames = null;
       if (videoChunks.length > 0) {
         groupsOfVideoChunks = splitGroupOfVideoChunks(videoChunks);
         processGroupsOfVideoChunks();
+      }
+      if (audioChunks.length > 0) {
+        groupsOfAudioChunks = [audioChunks];
+        processGroupsOfAudioChunks();
       }
     }
 
@@ -960,6 +983,59 @@ class CrafyVideoJS {
         await videoDecoder.flush();
       }
       videoDecoder.close();
+
+      let whileController_ii = true;
+      while (whileController_ii) {
+        if (videoEncoder.encodeQueueSize == 0) {
+          whileController_ii = false;
+          encodedFinishedPromise_resolved = true;
+          encodedFinishedPromise_resolver();
+        } else {
+          await sleep(3);
+        }
+      }
+
+    }
+
+    async function processGroupsOfAudioChunks() {
+      let sendedToDecodeCount = 0;
+      for (const groupOfChunks of groupsOfAudioChunks) {
+        for (const chunkItem of groupOfChunks) {
+          if (savedThis.itsOnError) {
+            return false;
+          }
+          var whileController = true;
+          while (whileController) {
+            if (audioDecoder.decodeQueueSize < audio_queue_max_size && audioEncoder.encodeQueueSize < audio_queue_max_size) {
+              try {
+                audioDecoder.decode(new EncodedAudioChunk(chunkItem));
+                sendedToDecodeCount++;
+              } catch (error) {
+                if (savedThis.logs) console.error("Decode audio sample error.", error);
+                savedThis.in_onError(error);
+                throw new Error("Decode audio sample error.");
+              }
+              whileController = false;
+            } else {
+              await sleep(1);
+            }
+          }
+        }
+        await audioDecoder.flush();
+      }
+      audioDecoder.close();
+
+      let whileController_ii = true;
+      while (whileController_ii) {
+        if (audioEncoder.encodeQueueSize == 0) {
+          whileController_ii = false;
+          encodedAudioFinishedPromise_resolved = true;
+          encodedAudioFinishedPromise_resolver();
+        } else {
+          await sleep(3);
+        }
+      }
+
     }
 
     async function sleep(ms) {
@@ -1044,20 +1120,25 @@ class CrafyVideoJS {
       //   await videoDecoder.flush();
       //   videoDecoder.close();
       // }
-      if (audioTrack) {
-        await audioDecoder.flush();
-        audioDecoder.close();
-      }
+      // if (audioTrack) {
+      //   await audioDecoder.flush();
+      //   audioDecoder.close();
+      // }
 
       if (savedThis.logs) console.log("reader.onload 3");
 
       if (videoTrack) {
         // await videoEncoder.flush();
-        await encodedFinishedPromise;
+        if (!encodedFinishedPromise_resolved) {
+          await encodedFinishedPromise;
+        }
         videoEncoder.close();
       }
-      if (audioTrack) {
-        await audioEncoder.flush();
+      if (audioTrack) {        
+        // await audioEncoder.flush();
+        if (!encodedAudioFinishedPromise_resolved) {
+          await encodedAudioFinishedPromise;
+        }
         audioEncoder.close();
       }
 
@@ -1469,6 +1550,10 @@ class CrafyVideoJS {
   }
 
   async getSupportedAudioBitrates(audioTrack, audio_codec = false) {
+    if (!audioTrack) {
+      return [];
+    }
+
     const bitratesToTest = [
       32000,
       64000,
